@@ -356,6 +356,38 @@ curl -X POST "http://127.0.0.1:8081/bot<YOUR_BOT_TOKEN>/setWebhook" \
 - LFS 上传：最大 50GB/文件
 - 免费用户仓库总大小：约 50GB
 
+### GitHub 存储（可选）
+
+支持将文件存到 GitHub 仓库，提供两种模式：
+
+- `releases`：更适合二进制文件，默认模式
+- `contents`：更适合小文件/文本文件（单文件建议不超过 20MB）
+
+**环境变量：**
+
+| 变量名 | 说明 | 示例 |
+| :--- | :--- | :--- |
+| `GITHUB_TOKEN` | GitHub Token（需要仓库写入权限） | `ghp_xxxxxxxxxxxx` |
+| `GITHUB_REPO` | 目标仓库（`owner/repo`） | `yourname/kvault-files` |
+| `GITHUB_MODE` | 存储模式：`releases` / `contents` | `releases` |
+| `GITHUB_PREFIX` | 可选，仓库内路径前缀 | `uploads` |
+| `GITHUB_RELEASE_TAG` | 可选，releases 模式固定标签 | `k-vault-storage` |
+| `GITHUB_BRANCH` | 可选，contents 模式目标分支 | `main` |
+| `GITHUB_API_BASE` | 可选，GitHub API 基址（企业版时可改） | `https://api.github.com` |
+
+**部署步骤：**
+
+1. 准备一个 GitHub 仓库（建议专门用于存储文件）。
+2. 在 GitHub `Settings -> Developer settings -> Personal access tokens` 创建 Token（Classic 或 Fine-grained 均可），确保对目标仓库有写权限。
+3. 在 Cloudflare Pages 项目中添加 `GITHUB_TOKEN`、`GITHUB_REPO`，可按需补充 `GITHUB_MODE` 等可选变量。
+4. 重新部署后，首页会出现 GitHub 存储选项（未连通时为禁用态）。
+5. 可访问 `/api/status` 确认 `github.connected` 与 `github.enabled` 状态。
+
+**建议：**
+
+- 大文件优先使用 `releases` 模式。
+- 需要目录化管理和频繁覆盖时可使用 `contents` 模式。
+
 ---
 
 ## 访客上传功能
@@ -378,7 +410,7 @@ curl -X POST "http://127.0.0.1:8081/bot<YOUR_BOT_TOKEN>/setWebhook" \
 **功能说明：**
 - 访客可在首页直接上传文件，无需登录
 - 访客有单文件大小限制和每日上传次数限制
-- 访客不能使用分片上传和高级存储选项（S3/Discord/HuggingFace）
+- 访客不能使用分片上传和高级存储选项（S3/Discord/HuggingFace/GitHub）
 - 访客不能访问管理后台和图片浏览页
 - 限制基于访客 IP 地址，每日自动重置
 
@@ -415,7 +447,7 @@ curl -X POST "http://127.0.0.1:8081/bot<YOUR_BOT_TOKEN>/setWebhook" \
 | `UPLOAD_MAX_SIZE` | 最大上传大小（字节） | `104857600` |
 | `UPLOAD_SMALL_FILE_THRESHOLD` | 直传/分片策略阈值（字节） | `20971520` |
 | `CHUNK_SIZE` | 分片大小（字节） | `5242880` |
-| `DEFAULT_STORAGE_TYPE` | 启动时默认存储类型（`telegram`/`r2`/`s3`/`discord`/`huggingface`） | `telegram` |
+| `DEFAULT_STORAGE_TYPE` | 启动时默认存储类型（`telegram`/`r2`/`s3`/`discord`/`huggingface`/`webdav`/`github`） | `telegram` |
 | `SETTINGS_STORE` | 基础设置存储后端（`sqlite` 或 `redis`） | `sqlite` |
 | `SETTINGS_REDIS_URL` | Redis URL（Upstash/Redis/KVrocks，`SETTINGS_STORE=redis` 时必填） | - |
 | `SETTINGS_REDIS_PREFIX` | Redis 键前缀 | `k-vault` |
@@ -495,6 +527,13 @@ curl -X POST "http://127.0.0.1:8081/bot<YOUR_BOT_TOKEN>/setWebhook" \
 | `DISCORD_CHANNEL_ID` | Discord 频道 ID | 可选 |
 | `HF_TOKEN` | HuggingFace Token | 可选 |
 | `HF_REPO` | HuggingFace 仓库 ID | 可选 |
+| `GITHUB_TOKEN` | GitHub Token（仓库写权限） | 可选 |
+| `GITHUB_REPO` | GitHub 仓库（`owner/repo`） | 可选 |
+| `GITHUB_MODE` | GitHub 存储模式（`releases`/`contents`） | 可选 |
+| `GITHUB_PREFIX` | GitHub 存储路径前缀 | 可选 |
+| `GITHUB_RELEASE_TAG` | GitHub Release 标签（releases 模式） | 可选 |
+| `GITHUB_BRANCH` | GitHub 分支（contents 模式） | 可选 |
+| `GITHUB_API_BASE` | GitHub API 基址 | 可选 |
 | `GUEST_UPLOAD` | 启用访客上传 | 可选 |
 | `GUEST_MAX_FILE_SIZE` | 访客文件大小限制（字节） | 可选 |
 | `GUEST_DAILY_LIMIT` | 访客每日上传次数 | 可选 |
@@ -554,13 +593,11 @@ Docker runtime now includes additional storage adapters:
 
 - `webdav`
 - `github` (`releases` mode and `contents` mode)
-- `gdrive` (minimal: service account + shared folder)
-- `onedrive` (minimal: Graph access token or client credentials)
 
 Key notes:
 
 - All dynamic storage secrets are still encrypted by `CONFIG_ENCRYPTION_KEY`.
-- `/api/status` now reports `webdav/github/gdrive/onedrive` as individual `connected/enabled` states.
+- `/api/status` now reports `webdav/github` as individual `connected/enabled` states.
 - GitHub mode guidance:
   - `releases`: preferred for binary files.
   - `contents`: better for small files/text, subject to tighter API constraints.

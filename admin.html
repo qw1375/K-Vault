@@ -484,6 +484,7 @@
             <div class="folder-head">
               <span><i class="fas fa-folder-tree"></i> 目录管理</span>
               <span>
+                <el-button size="mini" circle icon="el-icon-refresh" title="刷新目录与文件" :disabled="folderMutating" :loading="folderLoading" @click="refreshFolderResources"></el-button>
                 <el-button size="mini" circle icon="el-icon-plus" title="新建目录" :disabled="folderMutating" :loading="folderMutatingAction === 'create'" @click="createFolder"></el-button>
                 <el-button size="mini" circle icon="el-icon-edit" title="重命名目录" :disabled="folderMutating || !folderPath" :loading="folderMutatingAction === 'rename'" @click="renameCurrentFolder"></el-button>
                 <el-button size="mini" circle icon="el-icon-delete" title="删除目录" :disabled="folderMutating || !folderPath" :loading="folderMutatingAction === 'delete'" @click="deleteCurrentFolder"></el-button>
@@ -804,11 +805,12 @@
         <span class="batch-count">已选 {{ selectedFiles.length }} 项</span>
         <el-button-group size="mini" class="batch-actions">
           <el-button class="batch-btn batch-btn-copy" icon="el-icon-document-copy" @click="handleBatchCopy">复制链接</el-button>
+          <el-button class="batch-btn batch-btn-move" icon="el-icon-folder-opened" @click="moveSelectedToFolder">移动目录</el-button>
           <el-button class="batch-btn batch-btn-delete" icon="el-icon-delete" @click="handleBatchDelete">删除</el-button>
           <el-button class="batch-btn batch-btn-download" icon="el-icon-download" @click="handleBatchDownload">下载</el-button>
         </el-button-group>
         <el-button class="batch-btn batch-btn-cancel" icon="el-icon-close" @click="clearSelection">取消选择</el-button>
-        <span class="batch-shortcuts">快捷键：Ctrl/Cmd + C 复制 · D 下载 · Del 删除 · Esc 取消</span>
+        <span class="batch-shortcuts">快捷键：Ctrl/Cmd + C 复制 · M 移动 · D 下载 · Del 删除 · Esc 取消</span>
       </div>
     </transition>
   </div>
@@ -875,6 +877,7 @@
       folderLoading: false,
       folderMutating: false,
       folderMutatingAction: '',
+      listRequestSeq: 0,
       dragState: {
         active: false,
         fileIds: [],
@@ -1200,6 +1203,18 @@
           this.folderLoading = false;
         }
       },
+      async refreshFolderResources(showMessage = true) {
+        try {
+          await Promise.all([this.fetchFolders(), this.refreshFileList()]);
+          if (showMessage) {
+            this.$message.success('目录与文件已刷新');
+          }
+        } catch (error) {
+          if (showMessage) {
+            this.$message.error(error?.message || '刷新失败，请稍后重试');
+          }
+        }
+      },
       async createFolder() {
         if (this.folderMutating) return;
         const seed = this.folderPath ? `${this.folderPath}/新目录` : '新目录';
@@ -1352,6 +1367,8 @@
           this.$message.warning('请先选择文件');
           return;
         }
+        let previousRows = null;
+        let previousFolders = null;
         try {
           const prompt = await this.$prompt('请输入目标目录路径（留空表示根目录）', '移动文件', {
             inputValue: this.folderPath || '',
@@ -1360,6 +1377,67 @@
           });
           const targetFolderPath = this.normalizeFolderPath(prompt.value || '');
           const ids = this.selectedFiles.map((item) => item.name);
+          const hasEffectiveMove = ids.some((id) => {
+            const file = this.tableData.find((item) => item.name === id);
+            const current = this.normalizeFolderPath(file?.metadata?.folderPath || '');
+            return current !== targetFolderPath;
+          });
+          if (!hasEffectiveMove) {
+            this.$message.info('所选文件已在当前目录');
+            return;
+          }
+
+          const idSet = new Set(ids);
+          previousRows = this.tableData.map((file) => ({
+            ...file,
+            metadata: { ...(file.metadata || {}) },
+          }));
+          previousFolders = this.cloneFoldersSnapshot();
+          const normalizedCurrentFolder = this.normalizeFolderPath(this.folderPath);
+          const movedRows = this.tableData
+            .filter((row) => idSet.has(row.name))
+            .map((row) => ({
+              name: row.name,
+              sourceFolderPath: this.normalizeFolderPath(row?.metadata?.folderPath || ''),
+            }));
+
+          this.tableData = this.tableData
+            .map((row) => {
+              if (!idSet.has(row.name)) return row;
+              return {
+                ...row,
+                metadata: {
+                  ...(row.metadata || {}),
+                  folderPath: targetFolderPath,
+                },
+                selected: false,
+              };
+            })
+            .filter((row) => this.normalizeFolderPath(row?.metadata?.folderPath || '') === normalizedCurrentFolder);
+
+          movedRows.forEach((moved) => {
+            const sourceNode = (this.folders || []).find((folder) => {
+              const candidate = this.normalizeFolderPath(folder.path || folder.folderPath || '');
+              return candidate === moved.sourceFolderPath;
+            });
+            if (sourceNode && moved.sourceFolderPath !== targetFolderPath) {
+              sourceNode.fileCount = Math.max(0, Number(sourceNode.fileCount || 0) - 1);
+            }
+          });
+          if (targetFolderPath) {
+            this.ensureFolderBranchLocal(targetFolderPath);
+            const targetNode = (this.folders || []).find((folder) => {
+              const candidate = this.normalizeFolderPath(folder.path || folder.folderPath || '');
+              return candidate === targetFolderPath;
+            });
+            if (targetNode) {
+              const addCount = movedRows.filter((item) => item.sourceFolderPath !== targetFolderPath).length;
+              targetNode.fileCount = Number(targetNode.fileCount || 0) + addCount;
+            }
+          }
+          this.sortFoldersLocal();
+          this.updateStats();
+
           const result = await fetch('./api/manage/files/move-folder', {
             method: 'POST',
             credentials: 'include',
@@ -1367,11 +1445,17 @@
             body: JSON.stringify({ ids, targetFolderPath }),
           }).then((r) => r.json());
           if (!result.success) throw new Error(result.error || '移动失败');
-          this.$message.success(`已移动 ${result.moved || 0} 个文件`);
+          this.$message.success(`已移动 ${result.moved || 0} 个文件到 ${targetFolderPath || '根目录'}`);
           await this.fetchFolders();
-          await this.refreshFileList();
         } catch (error) {
-          if (error !== 'cancel') {
+          if (error !== 'cancel' && error !== 'close') {
+            if (previousRows) {
+              this.tableData = previousRows;
+            }
+            if (previousFolders) {
+              this.folders = previousFolders;
+            }
+            this.updateStats();
             this.$message.error(error.message || '移动文件失败');
           }
         }
@@ -1383,7 +1467,7 @@
         this.fileType = 'all';
         this.folderPath = '';
         this.currentPage = 1;
-        this.refreshFileList();
+        this.refreshFileList({ syncFolders: true });
         this.$message.success('已恢复默认筛选');
       },
       resolveDraggedIds(item) {
@@ -1644,6 +1728,11 @@
           this.handleBatchDownload();
           return;
         }
+        if (key === 'm') {
+          event.preventDefault();
+          this.moveSelectedToFolder();
+          return;
+        }
         if (key === 'delete' || key === 'backspace') {
           event.preventDefault();
           this.handleBatchDelete();
@@ -1792,7 +1881,7 @@
       async switchStorageFilter(command) {
         this.storageFilter = command;
         this.currentPage = 1;
-        await this.refreshFileList();
+        await this.refreshFileList({ syncFolders: true });
       },  // 切换存储类型筛选
       async loadMore() {
         if (this.isLoadingMore || !this.nextCursor) return;
@@ -2008,7 +2097,9 @@
         }
         event.target.value = '';
       },
-      async refreshFileList() {  // 不刷新页面，仅更新数据
+      async refreshFileList(options = {}) {  // 不刷新页面，仅更新数据
+        const { syncFolders = false } = options;
+        const requestSeq = ++this.listRequestSeq;
         try {
           const params = new URLSearchParams();
           params.set('limit', String(this.getListRequestLimit(false)));
@@ -2019,14 +2110,18 @@
           }
           const result = await fetch(`./api/manage/list?${params.toString()}`, { method: 'GET', credentials: 'include' })
             .then(response => response.json());
+          if (requestSeq !== this.listRequestSeq) return;
           const mapped = (result.keys || []).map((file) => this.normalizeListItem(file));
           this.tableData = mapped;
           this.nextCursor = result.list_complete ? null : result.cursor;
           this.totalCount = Number.isFinite(result?.stats?.total) ? result.stats.total : mapped.length;
           this.updateStats();
           this.sortData(this.tableData);
-          await this.fetchFolders();
+          if (syncFolders) {
+            await this.fetchFolders();
+          }
         } catch {
+          if (requestSeq !== this.listRequestSeq) return;
           this.$message.error('刷新文件列表失败，请检查网络连接');
         }
       },
@@ -2641,7 +2736,7 @@
 
       // 获取文件列表数据
       try {
-        await this.refreshFileList();
+        await this.refreshFileList({ syncFolders: true });
         this.sortData(this.tableData);
         // 初始化时不显示切换消息
         this.switchFileType(this.fileType, false);
@@ -2651,7 +2746,7 @@
           this.storageFilter = 'all';
           this.fileType = 'all';
           this.folderPath = '';
-          await this.refreshFileList();
+          await this.refreshFileList({ syncFolders: true });
           this.$message.warning('检测到筛选条件无匹配，已自动恢复默认视图');
         }
       } catch {
